@@ -1,0 +1,21 @@
+services:
+  rag:
+    build: .
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      CHROMA_PERSIST_DIR: ${CHROMA_PERSIST_DIR:-/data/chroma}
+      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-300}
+    volumes:
+      - rag_data:/data
+    cpus: 2.0
+    mem_limit: 3g
+    init: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  rag_data:

@@ -1,0 +1,5 @@
+*
+!app.py
+!requirements.txt
+!tests/
+!tests/test_app.py
