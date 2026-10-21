@@ -385,10 +385,31 @@ def validate_question(question: str) -> str:
     return question
 
 
+def display_source_label(doc: Document, number: int) -> str:
+    """Plain-language UI label; keep prompt source labels unchanged."""
+    location = f"page {doc.metadata['page']}" if doc.metadata.get("page") else f"section {doc.metadata['chunk_index']}"
+    return f"Source {number} · {doc.metadata['filename']} · {location}"
+
+
+def display_progress(message: str) -> str:
+    """Translate ingestion messages for display without changing the RAG API."""
+    if message.startswith("Skipped duplicate: "):
+        return "Already in library: " + message.removeprefix("Skipped duplicate: ")
+    match = re.fullmatch(r"(Indexing|Indexed) (.+): ([\d,]+) chunks( embedded)?", message)
+    if match:
+        action, filename, count, embedded = match.groups()
+        unit = "section" if count == "1" else "sections"
+        return f"{'Adding' if action == 'Indexing' else 'Added'} {filename}: {count} {unit}{' ready' if embedded else ''}"
+    return message
+
+
 def run_ui() -> None:
     import streamlit as st
 
-    st.set_page_config(page_title="Local Research", page_icon=":material/menu_book:", layout="centered")
+    st.set_page_config(page_title="Research", page_icon=":material/menu_book:", layout="centered")
+    st.session_state.setdefault("pending_action", None)
+    if "restore_question" in st.session_state:
+        st.session_state["question"] = st.session_state.pop("restore_question")
     if st.session_state.pop("reset_clear_confirmation", False):
         st.session_state["confirm_clear"] = False
 
@@ -396,8 +417,26 @@ def run_ui() -> None:
     def cached_library(config: Config) -> Library:
         return Library(config)
 
-    st.title("Local Research")
-    st.write("Ask your documents. Inspect the evidence.")
+    def queue_action(kind: str) -> None:
+        # Callbacks run before the next render; no model/storage work runs here.
+        if st.session_state["pending_action"] is not None:
+            return
+        action = {"kind": kind}
+        if kind == "ask":
+            action["question"] = st.session_state.get("question", "")
+        elif kind == "add":
+            uploads = st.session_state.get("uploads", [])
+            if len(uploads) > MAX_UPLOAD_FILES or sum(item.size for item in uploads) > MAX_UPLOAD_BYTES:
+                st.session_state["feedback"] = ("error", "Choose at most 10 files and 25 MB in total.")
+                return
+            action["files"] = [(item.name, item.getvalue()) for item in uploads]
+        if kind != "check":
+            st.session_state.pop("result", None)
+        st.session_state.pop("feedback", None)
+        st.session_state["pending_action"] = action
+
+    st.title("Research", anchor=False)
+    st.caption("Ask questions. Explore your sources.")
     try:
         config = Config.from_env()
         library = cached_library(config)
@@ -406,69 +445,98 @@ def run_ui() -> None:
         st.error(str(exc))
         st.stop()
 
+    pending = st.session_state["pending_action"]
+    busy = pending is not None
+    if busy and pending["kind"] == "ask":
+        st.session_state["question"] = pending["question"]
     with st.sidebar:
-        st.header("Document library")
-        st.caption(f"{files:,} documents · {chunks:,} chunks")
-        uploads = st.file_uploader("Add documents", type=["pdf", "txt", "md"], accept_multiple_files=True,
-                                   max_upload_size=10, help="Up to 10 files and 25 MB total. Text-based PDFs only.")
-        if st.button("Index documents", type="primary", disabled=not uploads, use_container_width=True):
-            try:
-                if len(uploads) > MAX_UPLOAD_FILES or sum(item.size for item in uploads) > MAX_UPLOAD_BYTES:
-                    raise AppError("Choose at most 10 files and 25 MB in total.")
-                with st.status("Indexing documents…", expanded=True) as status:
-                    detail = st.empty()
-                    messages = library.index_files([(item.name, item.getvalue()) for item in uploads], detail.write)
-                    status.update(label="Indexing complete", state="complete")
-                st.session_state.pop("result", None)
-                st.session_state["notice"] = "\n\n".join(messages)
-                st.rerun()
-            except AppError as exc:
-                st.error(str(exc))
-                st.caption("Earlier files in this upload may have completed. Refresh the page to see current library counts.")
+        st.header("Library", anchor=False)
+        st.write(f"{files:,} {'document' if files == 1 else 'documents'}")
+        uploads = st.file_uploader("Documents", type=["pdf", "txt", "md"], accept_multiple_files=True,
+                                   max_upload_size=10, key="uploads", disabled=busy,
+                                   help="PDF, TXT, or Markdown. Up to 10 files, 10 MB each and 25 MB total. PDFs must contain text.")
+        st.button("Add to library", type="primary", disabled=busy or not uploads, width="stretch",
+                  on_click=queue_action, args=("add",))
         st.divider()
-        if st.button("Check Ollama connection", use_container_width=True):
-            try:
-                with library._operation():
-                    check_ollama(config)
-                st.success("Ollama is reachable and both models are installed.")
-            except AppError as exc:
-                st.error(str(exc))
-        st.caption("Models run locally on your Windows host. No API key is required.")
+        with st.expander("Details"):
+            st.caption(f"{chunks:,} text sections")
+            st.caption("Runs on your computer. No API key needed.")
+            st.caption(f"Answers: {LLM_MODEL}\n\nSearch: {EMBED_MODEL}")
+            st.button("Check connection", disabled=busy, width="stretch", on_click=queue_action, args=("check",))
         with st.expander("Clear library"):
-            confirmed = st.checkbox("Delete all indexed documents", key="confirm_clear")
-            if st.button("Clear library", disabled=not confirmed, use_container_width=True):
-                try:
-                    library.clear()
-                    st.session_state.pop("result", None)
-                    st.session_state["reset_clear_confirmation"] = True
-                    st.session_state["notice"] = "The document library is empty."
-                    st.rerun()
-                except AppError as exc:
-                    st.error(str(exc))
+            confirmed = st.checkbox("Delete all documents", key="confirm_clear", disabled=busy)
+            st.button("Clear library", disabled=busy or not confirmed, width="stretch",
+                      on_click=queue_action, args=("clear",))
 
-    if notice := st.session_state.pop("notice", None):
-        st.success(notice)
+    # Allocate the same slots every run. A disappearing notice must not move the
+    # form's delta path and leave an old faded form behind during slow inference.
+    feedback_slot = st.empty()
+    guidance_slot = st.empty()
+    with st.container(key="question_panel"):
+        with st.form("question_form", border=False):
+            st.text_area("Question", key="question", max_chars=MAX_QUESTION_CHARS,
+                         placeholder="What would you like to know?", height=110, disabled=busy)
+            st.form_submit_button("Ask", type="primary", disabled=busy or not files,
+                                  on_click=queue_action, args=("ask",))
+    status_slot = st.empty()
+    results_slot = st.empty()
+
     if not files:
-        st.info("Start by adding PDF, TXT, or Markdown files in the sidebar, then select Index documents.")
-    with st.form("question_form"):
-        question = st.text_area("Question", max_chars=MAX_QUESTION_CHARS,
-                                placeholder="What do these documents say about…?", height=110)
-        submitted = st.form_submit_button("Find answer", type="primary", disabled=not files)
-    if submitted:
-        st.session_state.pop("result", None)
+        guidance_slot.info("Add documents to your Library to start.")
+    if feedback := st.session_state.get("feedback"):
+        kind, message = feedback
+        getattr(feedback_slot, kind)(message)
+
+    if pending is not None:
+        # All controls and placeholders now exist before any slow operation.
+        feedback_slot.empty()
+        results_slot.empty()
+        kind = pending["kind"]
+        label = {"ask": "Finding an answer…", "add": "Adding documents…",
+                 "check": "Checking connection…", "clear": "Clearing library…"}[kind]
         try:
-            with st.spinner("Reading the relevant passages…"):
-                st.session_state["result"] = library.answer(question)
+            with status_slot.container():
+                with st.spinner(label):
+                    if kind == "ask":
+                        st.session_state["result"] = library.answer(pending["question"])
+                    elif kind == "add":
+                        detail = st.empty()
+                        messages = library.index_files(pending["files"],
+                            lambda message: detail.caption(display_progress(message)))
+                        st.session_state["feedback"] = ("success", "\n\n".join(map(display_progress, messages)))
+                    elif kind == "clear":
+                        library.clear()
+                        st.session_state["reset_clear_confirmation"] = True
+                        st.session_state["feedback"] = ("success", "Library cleared.")
+                    else:
+                        with library._operation():
+                            check_ollama(config)
+                        st.session_state["feedback"] = ("success", "Connected. Both models are ready.")
         except AppError as exc:
-            st.error(str(exc))
+            message = str(exc)
+            if kind == "add":
+                message += " Any documents already added are ready to use. You can retry the remaining files."
+            st.session_state["feedback"] = ("error", message)
+        finally:
+            if kind == "ask":
+                # Disabled widget values can be dropped during an immediate
+                # rerun; restore the submitted snapshot before widget creation.
+                st.session_state["restore_question"] = pending["question"]
+            st.session_state["pending_action"] = None
+            status_slot.empty()
+        # Render enabled controls and current counts after every outcome.
+        st.rerun()
+
     if result := st.session_state.get("result"):
-        st.subheader("Answer")
-        st.write(result.answer)
-        st.subheader("Retrieved passages")
-        for number, doc in enumerate(result.sources, 1):
-            with st.expander(source_label(doc, number)):
-                st.text(doc.page_content)
-        st.caption("Passages show what was retrieved. Check that they support the answer.")
+        with results_slot.container():
+            st.subheader("Answer", anchor=False)
+            st.write(result.answer)
+            if result.sources:
+                st.subheader("Sources", anchor=False)
+                for number, doc in enumerate(result.sources, 1):
+                    with st.expander(display_source_label(doc, number)):
+                        st.text(doc.page_content)
+                st.caption("Check the sources to verify this answer.")
 
 
 if __name__ == "__main__":

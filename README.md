@@ -1,4 +1,4 @@
-# Local Research
+# Research
 
 A lightweight document question-answering app for a Windows PC with four CPU cores and 16 GB RAM. Streamlit, LangChain, and local ChromaDB run in a Docker container. Ollama runs **natively on Windows**, using `gemma4:e4b` for answers and `nomic-embed-text` for embeddings.
 
@@ -31,7 +31,7 @@ docker compose up --build -d
 docker compose ps
 ```
 
-Open [Local Research](http://localhost:8501). Add documents in the sidebar, select **Index documents**, and wait for completion. Enter a question and select **Find answer**. Expand **Retrieved passages** to check the evidence.
+Open [Research](http://localhost:8501). Add documents in the sidebar, select **Add to library**, and wait for completion. Enter a question and select **Ask**. Expand **Sources** to check the evidence.
 
 Every application call to Ollama uses **`http://host.docker.internal:11434`**. Docker Desktop supplies this host bridge; `localhost` inside the container would refer to the container itself. [Docker Desktop networking](https://docs.docker.com/desktop/features/networking/)
 
@@ -77,11 +77,13 @@ The image starts `streamlit run app.py` with `--server.address=0.0.0.0`, `--serv
 
 ## Outputs, persistence, and health
 
+Research uses a compact slate-accented theme with light/dark support. **Library** shows document counts; **Details** contains section counts, model information, and **Check connection**. Controls are disabled while work runs and restored after completion or an error, with the question preserved. The bundled `.streamlit/config.toml` and fixed UI containers keep the layout consistent during slow requests.
+
 The UI shows an answer and up to four retrieved passages with file/page or chunk labels. These passages are evidence for inspection, not guaranteed sentence-level citations. Separate model reasoning metadata is not displayed. Questions are independent; previous answers are not added to prompts.
 
 Chroma stores extracted chunks, embeddings, and metadata in the Docker named volume `rag_data` (normally prefixed with the Compose project name). `manifest.json` records completed file hashes, original display names, and chunk counts. Original upload files are not archived by the app; Streamlit holds upload bytes in session memory. The most recent answer exists only in browser-session state and is replaced by another query.
 
-The image health check tests Streamlit at `/_stcore/health`. A healthy UI does **not** prove Ollama is reachable; use **Check Ollama connection** in the sidebar. Discovery also runs before indexing or querying a nonempty library. No automatic model pulls or retries occur.
+The image health check tests Streamlit at `/_stcore/health`. A healthy UI does **not** prove Ollama is reachable; use **Details → Check connection** in the sidebar. Discovery also runs before indexing or querying a nonempty library. No automatic model pulls or retries occur.
 
 The exact supplied grounding prompt is preserved. An empty library deterministically returns the specified refusal through the application API. For nonempty retrieval, insufficient-evidence refusal is model-dependent: prompts do not guarantee factuality or resistance to instructions embedded in documents. Inspect the passages and use trusted documents. CPU inference and reasoning may be slow; memory/latency on the target four-core machine still need measurement.
 
@@ -104,7 +106,7 @@ py -3.12 -m venv .venv
 
 Tests use temporary Chroma storage and fake embeddings; no models are required. The production deployment remains Docker-based. Tests run against a stopped application are recommended because the test cleanup stops shared Chroma clients in that Python process.
 
-Validation passed all 29 automated tests on both Windows and inside the Linux image, dependency/syntax/import checks, and Docker Compose validation/build. The running container is healthy, uses the real host bridge, and completed a RAG smoke question through native Ollama. Two earlier native smoke questions also produced the expected factual answer and exact refusal. Resource use on a representative four-core/16 GB workload still needs measurement; see [verification evidence](docs/context.md#verification-evidence) and [deployment state](docs/context.md#github-synchronization-and-docker-deployment).
+Validation passed all 35 automated tests on both Windows and inside the Linux image, dependency/syntax/import checks, and Docker Compose validation/build. The running container is healthy, uses the real host bridge, and completed a RAG smoke question through native Ollama. Two earlier native smoke questions also produced the expected factual answer and exact refusal. Resource use on a representative four-core/16 GB workload still needs measurement; see [verification evidence](docs/context.md#verification-evidence) and [deployment state](docs/context.md#github-synchronization-and-docker-deployment).
 
 `docker compose down --volumes` **permanently deletes this project's library volume**. Use ordinary `down` when retaining data. Stop the container before backing up the complete `/data` volume; restore Chroma and the manifest together.
 

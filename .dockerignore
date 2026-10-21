@@ -3,3 +3,5 @@
 !requirements.txt
 !tests/
 !tests/test_app.py
+!.streamlit/
+!.streamlit/config.toml

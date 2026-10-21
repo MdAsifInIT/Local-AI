@@ -296,13 +296,13 @@ The orchard harvest is October.
         with patch.dict("os.environ", {"CHROMA_PERSIST_DIR": str(self.config.persist_dir), "OLLAMA_REQUEST_TIMEOUT": "3"}):
             ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
             self.assertEqual(len(ui.exception), 0)
-            self.assertFalse(next(button for button in ui.button if button.label == "Find answer").disabled)
+            self.assertFalse(next(button for button in ui.button if button.label == "Ask").disabled)
             clear = next(button for button in ui.button if button.label == "Clear library")
             self.assertTrue(clear.disabled)
             ui.checkbox[0].check().run()
             next(button for button in ui.button if button.label == "Clear library").click().run()
             self.assertEqual(len(ui.exception), 0)
-            self.assertTrue(next(button for button in ui.button if button.label == "Find answer").disabled)
+            self.assertTrue(next(button for button in ui.button if button.label == "Ask").disabled)
             self.assertEqual(self.library.stats(), (0, 0))
 
     def test_ui_question_displays_answer_and_evidence(self):
@@ -315,14 +315,107 @@ The orchard harvest is October.
              patch.object(app.OllamaEmbeddings, "embed_query", return_value=[1., 0., 0.]):
             ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
             ui.text_area[0].input("When is orchard harvest?")
-            next(button for button in ui.button if button.label == "Find answer").click().run()
+            next(button for button in ui.button if button.label == "Ask").click().run()
             self.assertEqual(len(ui.exception), 0)
             self.assertTrue(any("October." in item.value for item in ui.markdown))
             self.assertTrue(any("notes.txt" in item.label for item in ui.expander))
 
+    def test_ui_uses_simple_names_and_one_question_form(self):
+        from streamlit.testing.v1 import AppTest
+        with patch.dict("os.environ", {"CHROMA_PERSIST_DIR": str(self.config.persist_dir)}):
+            ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
+            self.assertEqual([item.value for item in ui.title], ["Research"])
+            self.assertEqual(ui.sidebar.header[0].value, "Library")
+            self.assertEqual(len(ui.text_area), 1)
+            self.assertTrue(next(button for button in ui.button if button.label == "Ask").disabled)
+            self.assertTrue(any(item.label == "Details" for item in ui.expander))
+            self.assertTrue(any(button.label == "Add to library" for button in ui.button))
+
+    def test_ui_repeated_questions_and_failure_restore_controls(self):
+        from streamlit.testing.v1 import AppTest
+        self.index()
+        source = list(app.iter_chunks("notes.txt", b"The orchard harvest is October."))
+        replies = [app.AnswerResult("First answer", source), app.AppError("Request timed out. Try again."),
+                   app.AnswerResult("Second answer", source)]
+        with patch.dict("os.environ", {"CHROMA_PERSIST_DIR": str(self.config.persist_dir)}), \
+             patch.object(app.Library, "answer", side_effect=replies) as answer:
+            ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
+            ui.session_state["feedback"] = ("success", "Documents added.")
+            for index in range(3):
+                ui.text_area[0].input(f"Question {index}")
+                next(button for button in ui.button if button.label == "Ask").click().run()
+                self.assertEqual(len(ui.exception), 0)
+                self.assertEqual(len(ui.text_area), 1)
+                self.assertEqual(answer.call_args.args[0], f"Question {index}")
+                self.assertEqual(answer.call_count, index + 1)
+                self.assertEqual(ui.text_area[0].value, f"Question {index}")
+                self.assertFalse(ui.text_area[0].disabled)
+                self.assertFalse(next(button for button in ui.button if button.label == "Ask").disabled)
+                self.assertIsNone(ui.session_state["pending_action"])
+                if index == 1:
+                    self.assertTrue(any("timed out" in item.value for item in ui.error))
+                    self.assertFalse(any("First answer" in item.value for item in ui.markdown))
+            self.assertTrue(any("Second answer" in item.value for item in ui.markdown))
+            self.assertTrue(any("section 1" in item.label for item in ui.expander))
+
+    def test_ui_busy_error_and_connection_check_recover(self):
+        from streamlit.testing.v1 import AppTest
+        self.index()
+        with patch.dict("os.environ", {"CHROMA_PERSIST_DIR": str(self.config.persist_dir)}), \
+             patch.object(app.Library, "answer", side_effect=app.BusyError("The library is busy. Try again.")):
+            ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
+            ui.text_area[0].input("When is harvest?")
+            next(button for button in ui.button if button.label == "Ask").click().run()
+            self.assertTrue(any("busy" in item.value for item in ui.error))
+            self.assertFalse(ui.text_area[0].disabled)
+            with patch.object(app, "check_ollama", side_effect=app.AppError("Connection unavailable.")):
+                next(button for button in ui.button if button.label == "Check connection").click().run()
+            self.assertTrue(any("Connection unavailable" in item.value for item in ui.error))
+            with patch.object(app, "check_ollama"):
+                next(button for button in ui.button if button.label == "Check connection").click().run()
+            self.assertTrue(any("Connected" in item.value for item in ui.success))
+            self.assertEqual(len(ui.exception), 0)
+
+    def test_ui_failed_addition_restores_controls_and_updates_counts(self):
+        from streamlit.testing.v1 import AppTest
+        with patch.dict("os.environ", {"CHROMA_PERSIST_DIR": str(self.config.persist_dir)}):
+            ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
+            ui.session_state["pending_action"] = {"kind": "add", "files": [("bad.txt", b"\xff")]}
+            with patch.object(app, "check_ollama"):
+                ui.run()
+            self.assertTrue(any("UTF-8" in item.value for item in ui.error))
+            self.assertIsNone(ui.session_state["pending_action"])
+            self.assertFalse(ui.text_area[0].disabled)
+            self.assertEqual(self.library.stats(), (0, 0))
+
+    def test_ui_partial_addition_and_failed_clear_refresh_controls(self):
+        from streamlit.testing.v1 import AppTest
+        with patch.dict("os.environ", {"CHROMA_PERSIST_DIR": str(self.config.persist_dir)}), \
+             patch.object(app, "check_ollama"), \
+             patch.object(app.OllamaEmbeddings, "embed_documents", side_effect=FakeEmbeddings().embed_documents):
+            ui = AppTest.from_file(str(Path(app.__file__)), default_timeout=20).run()
+            ui.session_state["pending_action"] = {"kind": "add", "files": [("good.txt", b"orchard"), ("bad.txt", b"\xff")]}
+            ui.run()
+            self.assertEqual(len(ui.exception), 0)
+            self.assertTrue(any("UTF-8" in item.value for item in ui.error))
+            self.assertTrue(any(item.value == "1 document" for item in ui.sidebar.markdown))
+            ui.checkbox[0].check().run()
+            with patch.object(app.Library, "clear", side_effect=app.AppError("Deletion unavailable.")) as clear:
+                next(button for button in ui.button if button.label == "Clear library").click().run()
+            self.assertEqual(clear.call_count, 1)
+            self.assertTrue(any("Deletion unavailable" in item.value for item in ui.error))
+            self.assertFalse(next(button for button in ui.button if button.label == "Ask").disabled)
+            self.assertIsNone(ui.session_state["pending_action"])
+
 
 @unittest.skipUnless(APP_EXISTS, "Application not implemented yet")
 class ConfigurationAndNetworkTests(unittest.TestCase):
+    def test_progress_translation_preserves_filenames(self):
+        self.assertEqual(app.display_progress("Indexed notes.txt: 1 chunks"), "Added notes.txt: 1 section")
+        self.assertEqual(app.display_progress("Indexed Indexing chunks.txt: 12 chunks"), "Added Indexing chunks.txt: 12 sections")
+        self.assertEqual(app.display_progress("Indexing chunks.md: 8 chunks embedded"), "Adding chunks.md: 8 sections ready")
+        self.assertEqual(app.display_progress("Skipped duplicate: Indexed chunks.pdf"), "Already in library: Indexed chunks.pdf")
+
     def test_reasoning_not_displayed(self):
         for content, expected in [("<think>secret</think>October.", "October."),
                                   ("<|channel>thought\nsecret<|channel>final\nOctober.", "October."),

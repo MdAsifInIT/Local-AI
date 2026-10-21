@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-Local Research is a single-user, single-process document RAG application. A Windows host with four CPU cores and 16 GB RAM runs Ollama natively. A Linux Docker container runs Streamlit, focused LangChain integration packages, and embedded persistent Chroma. There is no separate vector database service, Ollama container, cloud inference service, external search, or authentication layer.
+Research is a single-user, single-process document RAG application. A Windows host with four CPU cores and 16 GB RAM runs Ollama natively. A Linux Docker container runs Streamlit, focused LangChain integration packages, and embedded persistent Chroma. There is no separate vector database service, Ollama container, cloud inference service, external search, or authentication layer.
 
 ```mermaid
 flowchart LR
@@ -36,6 +36,8 @@ flowchart LR
 The browser only reaches Streamlit through host loopback. The container accesses Ollama using the fixed Docker Desktop hostname. Ollama must accept the Docker-host connection; Windows Firewall must limit exposure as needed. Native Ollama is outside the container's CPU/RAM limits.
 
 ## Pipeline
+
+UI callbacks queue one action per session, then render the complete page with disabled controls before starting slow work. Stable feedback, question, status, and results containers prevent notices from shifting the form during reruns. Completion or expected failure restores controls and current counts. This presentation layer leaves the model, storage, locking, and retrieval boundaries unchanged.
 
 1. The user selects PDF, TXT, or Markdown uploads and explicitly requests indexing. File-count, byte-size, extension, PDF-page, extracted-character, and chunk-count limits bound ordinary ingestion.
 2. Files are hashed; completed duplicates are skipped. PDFs are extracted one page at a time. Text files are decoded as UTF-8. The splitter retains page boundaries and produces labeled chunks.

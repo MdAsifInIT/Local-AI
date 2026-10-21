@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && chown -R app:app /data /app
 
 COPY --chown=app:app app.py .
+COPY --chown=app:app .streamlit/config.toml .streamlit/config.toml
 COPY --chown=app:app tests/ tests/
 USER app
 EXPOSE 8501

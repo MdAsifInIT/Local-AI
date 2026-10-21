@@ -6,6 +6,7 @@ This is the flat inventory of authored project files. Excluded: `.git/` internal
 | --- | --- |
 | `.dockerignore` | Allowlist the application, pinned dependencies, and tests into the image build context. |
 | `.gitignore` | Exclude local environments, bytecode, secrets, runtime data, caches, and logs. |
+| `.streamlit/config.toml` | Define Research's slate accent, compact headings, consistent controls, and minimal toolbar. |
 | `AGENTS.md` | Enforce locked architecture, exact prompt preservation, verification, and immediate documentation updates. |
 | `app.py` | Implement configuration, bounded parsing/indexing, committed-file retrieval, generation, locking, and Streamlit UI. |
 | `Dockerfile` | Build a non-root Python 3.12 runtime with resource-related defaults and a Streamlit health check. |
